@@ -1,4 +1,3 @@
-// index.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -12,8 +11,9 @@ const { extractMessages, extractStatuses } = require('./utils/processor');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// ✅ Fixed CORS policy to allow all origins
-app.use(cors({ origin: '*' }));
+// Set the CORS origin to allow your frontend URL.
+// The `|| '*`' is a fallback for development.
+app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(bodyParser.json({ limit: '10mb' }));
 
 // ✅ MongoDB connection
@@ -22,9 +22,9 @@ mongoose.connect(process.env.MONGODB_URI)
   .catch(err => console.error('❌ MongoDB error:', err));
 
 /**
- * =============================
+ * ============================
  * WEBHOOK ENDPOINT
- * =============================
+ * ============================
  */
 app.post('/webhook', async (req, res) => {
   try {
@@ -40,82 +40,69 @@ app.post('/webhook', async (req, res) => {
         message_id: m.id,
         meta_msg_id: m.meta_msg_id || null,
         wa_id: m.wa_id,
-        from: m.from,
-        to: m.to,
-        name: m.name,
-        number: m.number,
-        body: m.body,
-        type: m.type,
-        timestamp: m.timestamp,
-        status: 'sent',
-        raw: m.raw,
+        ...m,
       };
 
-      const existingMsg = await Message.findOne({ message_id: m.id });
-      if (!existingMsg) {
-        await Message.create(doc);
-        inserted++;
-      }
+      await Message.updateOne(
+        { message_id: m.id },
+        { $set: doc },
+        { upsert: true }
+      );
+      inserted++;
     }
 
     // Handle message status updates
     const statuses = extractStatuses(payload);
     for (const s of statuses) {
       if (!s.id) continue;
-      const updatedMsg = await Message.findOneAndUpdate({ message_id: s.id }, { status: s.status });
-      if (updatedMsg) updated++;
+
+      await Message.updateOne(
+        { message_id: s.id },
+        { $set: { status: s.status } }
+      );
+      updated++;
     }
 
-    res.json({ ok: true, inserted, updated });
+    console.log(`✅ Webhook processed: ${inserted} messages, ${updated} statuses`);
+    res.status(200).json({ ok: true });
   } catch (err) {
-    console.error("Webhook Error:", err);
+    console.error("❌ Webhook Error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
 /**
- * =============================
- * API ENDPOINTS
- * =============================
+ * ============================
+ * NEW API ENDPOINTS
+ * ============================
  */
 
-// ✅ GET all conversations with the last message
+// ✅ GET all conversations (grouped by wa_id)
 app.get('/conversations', async (req, res) => {
   try {
+    // Aggregation to find the last message for each unique wa_id
     const conversations = await Message.aggregate([
-      // Group by 'wa_id' to get the last message for each conversation
+      { $sort: { timestamp: -1 } }, // Sort by timestamp descending to get the most recent message first
       {
         $group: {
-          _id: "$wa_id",
-          lastMessage: { $last: "$$ROOT" },
-          name: { $last: "$name" },
-        }
+          _id: "$wa_id", // Group by the WhatsApp ID
+          lastMessage: { $first: "$$ROOT" }, // Get the entire document of the most recent message in the group
+        },
       },
-      // Sort conversations by the last message timestamp in descending order
-      {
-        $sort: { "lastMessage.timestamp": -1 }
-      },
-      // Project the desired output format
       {
         $project: {
-          _id: 0,
-          wa_id: "$_id",
-          name: "$name",
-          lastMessage: {
-            _id: "$lastMessage._id",
-            body: "$lastMessage.body",
-            timestamp: "$lastMessage.timestamp",
-            status: "$lastMessage.status",
-            name: "$lastMessage.name",
-            from: "$lastMessage.from",
-          }
-        }
+          _id: 0, // Exclude the default _id field
+          wa_id: "$_id", // Rename the grouped ID to wa_id
+          lastMessage: "$lastMessage", // Include the last message document
+        },
+      },
+      {
+        $sort: { "lastMessage.timestamp": -1 } // Sort the final conversations by the last message's timestamp
       }
     ]);
-
     res.json(conversations);
   } catch (err) {
-    console.error("Get Conversations Error:", err);
+    console.error("❌ Load conversations error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -123,48 +110,49 @@ app.get('/conversations', async (req, res) => {
 // ✅ GET all messages for a specific conversation
 app.get('/conversations/:wa_id/messages', async (req, res) => {
   try {
-    const messages = await Message.find({ wa_id: req.params.wa_id }).sort('timestamp');
+    const messages = await Message.find({ wa_id: req.params.wa_id }).sort({
+      timestamp: 1, // Sort messages in chronological order
+    });
     res.json(messages);
   } catch (err) {
-    console.error("Get Messages Error:", err);
+    console.error("❌ Load messages error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// ✅ POST a new message
-app.post('/conversations/:wa_id/messages', async (req, res) => {
+// ✅ POST to send a message
+app.post('/send/:wa_id', async (req, res) => {
   try {
-    const { body: bodyText, name } = req.body;
-    if (!bodyText) {
-      return res.status(400).json({ ok: false, error: 'Message body is required.' });
+    const { body } = req.body;
+    if (!body) {
+      return res.status(400).json({ ok: false, error: "Message body is required." });
     }
 
-    // Save as sent
+    // Save the outgoing message with a unique ID
     const msg = await Message.create({
       message_id: `out-${uuidv4()}`,
       wa_id: req.params.wa_id,
       from: 'me',
       to: req.params.wa_id,
-      body: bodyText,
+      body: body,
       type: 'text',
-      name,
       timestamp: new Date(),
       status: 'sent',
       raw: { source: 'frontend' }
     });
 
-    // Simulate status progression
+    // Simulate status progression (for demo purposes)
     setTimeout(async () => {
       await Message.updateOne({ _id: msg._id }, { $set: { status: 'delivered' } });
-    }, 2000); // 2s → delivered
+    }, 2000); // 2s -> delivered
 
     setTimeout(async () => {
       await Message.updateOne({ _id: msg._id }, { $set: { status: 'read' } });
-    }, 4000); // 4s → read (blue tick)
+    }, 4000); // 4s -> read (blue tick)
 
     res.json({ ok: true, message: msg });
   } catch (err) {
-    console.error("Send Message Error:", err);
+    console.error("❌ Send Message Error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -172,24 +160,17 @@ app.post('/conversations/:wa_id/messages', async (req, res) => {
 // ✅ DELETE a message by its _id
 app.delete('/messages/:id', async (req, res) => {
   try {
-    const msg = await Message.findById(req.params.id);
+    const msg = await Message.findByIdAndDelete(req.params.id);
     if (!msg) {
-      return res.status(404).json({ ok: false, error: 'Message not found.' });
+      return res.status(404).json({ ok: false, error: "Message not found." });
     }
-
-    if (msg.from !== 'me') {
-      return res.status(403).json({ ok: false, error: 'Cannot delete messages from other users.' });
-    }
-
-    await Message.deleteOne({ _id: req.params.id });
-    res.json({ ok: true, message: 'Message deleted.' });
+    res.json({ ok: true, message: "Message deleted" });
   } catch (err) {
-    console.error("Delete Message Error:", err);
+    console.error("❌ Delete Message Error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`✅ Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
+
+module.exports = app;
