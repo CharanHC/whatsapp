@@ -123,39 +123,38 @@ app.get('/conversations/:wa_id/messages', async (req, res) => {
 // ✅ POST to send a message
 app.post('/conversations/:wa_id/messages', async (req, res) => {
   try {
-    const { body } = req.body;
-    if (!body) {
-      return res.status(400).json({ ok: false, error: "Message body is required." });
+    const bodyText = req.body.body?.trim();
+    if (!bodyText) {
+      return res.status(400).json({ ok: false, error: "Message body is required" });
     }
 
-    // Save the outgoing message with a unique ID
     const msg = await Message.create({
       message_id: `out-${uuidv4()}`,
-      wa_id: req.params.wa_id,
-      from: 'me', // <-- I fixed this line. It was previously req.params.wa_id.
+      wa_id: req.params.wa_id,   // chat ID
+      from: "me",                // always "me" for outgoing messages
       to: req.params.wa_id,
-      body: body,
-      type: 'text',
+      body: bodyText,
+      type: "text",
       timestamp: new Date(),
-      status: 'sent',
-      raw: { source: 'frontend' }
+      status: "sent",
+      raw: { source: "frontend" }
     });
 
-    // Simulate status progression (for demo purposes)
+    // simulate delivery and read
     setTimeout(async () => {
-      await Message.updateOne({ _id: msg._id }, { $set: { status: 'delivered' } });
-    }, 2000); // 2s -> delivered
-
+      await Message.updateOne({ _id: msg._id }, { $set: { status: "delivered" } });
+    }, 2000);
     setTimeout(async () => {
-      await Message.updateOne({ _id: msg._id }, { $set: { status: 'read' } });
-    }, 4000); // 4s -> read (blue tick)
+      await Message.updateOne({ _id: msg._id }, { $set: { status: "read" } });
+    }, 4000);
 
     res.json({ ok: true, message: msg });
   } catch (err) {
-    console.error("❌ Send Message Error:", err);
+    console.error("Send Message Error:", err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 
 // ✅ DELETE a message by its _id
 app.delete('/messages/:id', async (req, res) => {
