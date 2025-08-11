@@ -121,7 +121,8 @@ app.get('/conversations/:wa_id/messages', async (req, res) => {
 });
 
 // ✅ POST to send a message
-app.post('/send/:wa_id', async (req, res) => {
+// This is the new, corrected route to match the frontend's request
+app.post('/conversations/:wa_id/messages', async (req, res) => {
   try {
     const { body } = req.body;
     if (!body) {
@@ -132,7 +133,7 @@ app.post('/send/:wa_id', async (req, res) => {
     const msg = await Message.create({
       message_id: `out-${uuidv4()}`,
       wa_id: req.params.wa_id,
-      from: 'me',
+      from: req.params.wa_id, // The message is from the user
       to: req.params.wa_id,
       body: body,
       type: 'text',
